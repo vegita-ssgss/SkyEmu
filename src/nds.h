@@ -6925,9 +6925,20 @@ static FORCE_INLINE void nds_tick_audio(nds_t*nds, sb_emu_state_t*emu){
     uint32_t master_volume=soundcnt&0x7f;
     if(master_volume==127)master_volume=128;
     if(soundcnt&(1u<<15)){
-      l*=master_volume/128.;
-      r*=master_volume/128.;
-    }else l=r=0;
+      // The NDS mixer has additional fixed-point headroom before the final
+      // 16-bit output. Keep that headroom here so simultaneous music and
+      // effects do not clip and change their relative volume.
+      l*=master_volume/(128.*16.);
+      r*=master_volume/(128.*16.);
+    }else{
+      // SkyEmu did not previously consume SOUNDCNT, and older save states can
+      // therefore restore it as zero while active channels still contain
+      // valid audio. Preserve audible output for those states. A later game
+      // write to SOUNDCNT automatically switches to the hardware-controlled
+      // path above.
+      l/=16.;
+      r/=16.;
+    }
 
     // Clipping
     if(l>1.0)l=1;
