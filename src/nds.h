@@ -6782,7 +6782,9 @@ static FORCE_INLINE void nds_tick_audio(nds_t*nds, sb_emu_state_t*emu){
 
     const float lowpass_coef = 0.999;
 
-    float l = 0, r = 0; 
+    float l = 0, r = 0;
+    float channel_l[16] = {0}, channel_r[16] = {0};
+    uint16_t soundcnt = nds7_io_read16(nds,NDS7_SOUNDCNT);
     for(int c = 0; c<16;++c){
       uint32_t cnt = nds7_io_read32(nds,NDS7_SOUND0_CNT+c*16);
       bool enable = SB_BFE(cnt,31,1);
@@ -6797,7 +6799,7 @@ static FORCE_INLINE void nds_tick_audio(nds_t*nds, sb_emu_state_t*emu){
       }
       uint32_t sad = nds7_io_read32(nds,NDS7_SOUND0_SAD+c*16);
       uint16_t pnt = nds7_io_read16(nds,NDS7_SOUND0_PNT+c*16);
-      uint16_t len = nds7_io_read32(nds,NDS7_SOUND0_LEN+c*16);
+      uint32_t len = nds7_io_read32(nds,NDS7_SOUND0_LEN+c*16);
       uint32_t tot_samps = len*4;
       switch(format){
         case 0: tot_samps = (len+pnt)*4; pnt*=4;break;
@@ -6823,13 +6825,19 @@ static FORCE_INLINE void nds_tick_audio(nds_t*nds, sb_emu_state_t*emu){
           break; 
         }
         uint32_t vol_mul = SB_BFE(cnt,0,7);
+        if(vol_mul==127)vol_mul=128;
         uint32_t vol_div = SB_BFE(cnt,8,2);
         uint16_t pan = SB_BFE(cnt,16,7);
+        if(pan==127)pan=128;
         float div_table[4]={1.0,0.5,0.25,1.0/16.};
         v*=vol_mul*div_table[vol_div]/128.;
         emu->audio_channel_output[c] = emu->audio_channel_output[c]*lowpass_coef + fabs(v)*(1.0-lowpass_coef);
-        r+=v*pan/128.;
-        l+=v*(128-pan)/128.;
+        channel_r[c]=v*pan/128.;
+        channel_l[c]=v*(128-pan)/128.;
+        if((c!=1||!(soundcnt&(1u<<12)))&&(c!=3||!(soundcnt&(1u<<13)))){
+          r+=channel_r[c];
+          l+=channel_l[c];
+        }
       }
       audio->channel[c].timer+=cycles_since_tick;
       while(audio->channel[c].timer>0x1ffff){
@@ -6904,13 +6912,28 @@ static FORCE_INLINE void nds_tick_audio(nds_t*nds, sb_emu_state_t*emu){
     }
     if((sb_ring_buffer_size(&emu->audio_ring_buff)+3>SB_AUDIO_RING_BUFFER_SIZE)) continue;
 
+    switch((soundcnt>>8)&3){
+      case 1:l=channel_l[1];break;
+      case 2:l=channel_l[3];break;
+      case 3:l=channel_l[1]+channel_l[3];break;
+    }
+    switch((soundcnt>>10)&3){
+      case 1:r=channel_r[1];break;
+      case 2:r=channel_r[3];break;
+      case 3:r=channel_r[1]+channel_r[3];break;
+    }
+    uint32_t master_volume=soundcnt&0x7f;
+    if(master_volume==127)master_volume=128;
+    if(soundcnt&(1u<<15)){
+      l*=master_volume/128.;
+      r*=master_volume/128.;
+    }else l=r=0;
+
     // Clipping
     if(l>1.0)l=1;
     if(r>1.0)r=1;
     if(l<-1.0)l=-1;
     if(r<-1.0)r=-1;
-    l*=0.5;
-    r*=0.5;
 
     // Quantization
     unsigned write_entry0 = (emu->audio_ring_buff.write_ptr++)%SB_AUDIO_RING_BUFFER_SIZE;
